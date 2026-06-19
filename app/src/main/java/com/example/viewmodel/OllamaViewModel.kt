@@ -80,10 +80,12 @@ class OllamaViewModel(application: Application) : AndroidViewModel(application) 
     val useLocalDaemon = MutableStateFlow(prefs.getBoolean("use_local_daemon", true)) // Default useLocalDaemon to true!
     val daemonDownloadUrl = MutableStateFlow<String>(
         run {
-            val savedUrl = prefs.getString("daemon_download_url", "https://ollama.com/download/ollama-linux-arm64.tgz") ?: "https://ollama.com/download/ollama-linux-arm64.tgz"
-            if (savedUrl.contains("releases/download/v0.1.48/ollama-linux-arm64.tgz", ignoreCase = true)) {
-                prefs.edit().putString("daemon_download_url", "https://ollama.com/download/ollama-linux-arm64.tgz").apply()
-                "https://ollama.com/download/ollama-linux-arm64.tgz"
+            val defaultUrl = "https://github.com/ollama/ollama/releases/latest/download/ollama-linux-arm64"
+            val savedUrl = prefs.getString("daemon_download_url", defaultUrl) ?: defaultUrl
+            if (savedUrl.contains("ollama.com/download", ignoreCase = true)) {
+                // Force update to GitHub if it was the old broken one
+                prefs.edit().putString("daemon_download_url", defaultUrl).apply()
+                defaultUrl
             } else {
                 savedUrl
             }

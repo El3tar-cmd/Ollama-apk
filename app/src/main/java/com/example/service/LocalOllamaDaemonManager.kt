@@ -169,18 +169,27 @@ class LocalOllamaDaemonManager private constructor() {
         onLog: suspend (String, String) -> Unit
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            val downloadFile = File(context.cacheDir, "ollama-temp.tgz")
-            if (downloadFile.exists()) downloadFile.delete()
+            val isTgz = url.endsWith(".tgz", ignoreCase = true) || url.contains(".tgz")
+            val tempFile = File(context.cacheDir, if (isTgz) "ollama-temp.tgz" else "ollama-temp")
+            if (tempFile.exists()) tempFile.delete()
 
             val connection = URL(url).openConnection() as HttpURLConnection
-            // إضافة User-Agent لتبدو العملية كطلب من متصفح حقيقي لتجنب الرفض 403
+            connection.instanceFollowRedirects = true
             connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36")
             connection.connect()
-            if (connection.responseCode != 200) throw Exception("HTTP ${connection.responseCode} while downloading")
+            
+            if (connection.responseCode != 200) {
+                // If it's a redirect that didn't follow automatically (rare for same-agent but happens)
+                val redirectUrl = connection.getHeaderField("Location")
+                if (redirectUrl != null) {
+                    return@withContext tryDownloadAndInstall(context, redirectUrl, destFolder, binFile, onLog)
+                }
+                throw Exception("HTTP ${connection.responseCode} while downloading from $url")
+            }
 
             val totalLength = connection.contentLength.toLong()
             connection.inputStream.use { input ->
-                FileOutputStream(downloadFile).use { output ->
+                FileOutputStream(tempFile).use { output ->
                     val data = ByteArray(8192)
                     var total: Long = 0
                     var count: Int
@@ -201,27 +210,33 @@ class LocalOllamaDaemonManager private constructor() {
                 }
             }
 
-            onLog("INFO", "تم التحميل بنجاح. جاري فك الضغط (Targz)...")
-            _status.value = DaemonStatus.EXTRACTING
-            extractTarGzippedFile(downloadFile, destFolder, onLog)
-            
-            // Check if binary was extracted to standard location or root of extraction
-            // Ollama tgz usually has 'bin/ollama' or just 'ollama'
-            val possibleBin = File(destFolder, "ollama")
-            if (possibleBin.exists()) {
+            if (isTgz) {
+                onLog("INFO", "تم التحميل بنجاح. جاري فك الضغط (Targz)...")
+                _status.value = DaemonStatus.EXTRACTING
+                extractTarGzippedFile(tempFile, destFolder, onLog)
+                
+                val possibleBin = File(destFolder, "ollama")
+                if (possibleBin.exists()) {
+                    val finalBinDir = File(destFolder, "bin")
+                    if (!finalBinDir.exists()) finalBinDir.mkdirs()
+                    possibleBin.renameTo(binFile)
+                }
+                tempFile.delete()
+            } else {
+                onLog("INFO", "تم تحميل الملف الثنائي بنجاح.")
                 val finalBinDir = File(destFolder, "bin")
                 if (!finalBinDir.exists()) finalBinDir.mkdirs()
-                possibleBin.renameTo(binFile)
+                if (binFile.exists()) binFile.delete()
+                tempFile.renameTo(binFile)
             }
 
             if (binFile.exists()) {
                 binFile.setExecutable(true, false)
-                onLog("INFO", "تم تحميل وتثبيت المحرك بنجاح من المصدر الخارجي.")
-                downloadFile.delete()
+                onLog("INFO", "تم تثبيت المحرك بنجاح.")
                 _status.value = DaemonStatus.IDLE
                 true
             } else {
-                throw Exception("فشل العثور على الملف الثنائي بعد فك الضغط.")
+                throw Exception("فشل العثور على الملف الثنائي بعد المعالجة.")
             }
         } catch (e: Exception) {
             onLog("ERROR", "فشل التحميل أو التثبيت: ${e.message}")
