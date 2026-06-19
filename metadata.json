@@ -1,0 +1,6 @@
+{
+  "name": "Ollama Mobile",
+  "description": "تطبيق Ollama Mobile لإدارة وتشغيل سيرفر أولاما داخلي أو عميل خارجي مع واجهة دردشة متطورة وإعدادات احترافية متكاملة.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

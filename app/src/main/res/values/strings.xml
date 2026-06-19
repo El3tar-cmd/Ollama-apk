@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">Ollama Mobile</string>
+    <string name="server_dashboard">لوحة التحكم</string>
+    <string name="chat_interface">الدردشة</string>
+    <string name="model_library">الموديلات</string>
+    <string name="server_logs">السجلات</string>
+    <string name="expert_settings">الإعدادات المتقدمة</string>
+    <string name="active_model">الموديل النشط</string>
+    <string name="local_port">المنفذ المحلي</string>
+    <string name="server_status">حالة السيرفر</string>
+    <string name="server_running">السيرفر يعمل</string>
+    <string name="server_stopped">السيرفر متوقف</string>
+    <string name="stop_server">إيقاف</string>
+    <string name="start_server">تشغيل</string>
+    <string name="cpu_usage">المعالج CPU</string>
+    <string name="ram_usage">الذاكرة RAM</string>
+    <string name="temperature">الحرارة TEMP</string>
+    <string name="models_library_title">مكتبة وتنزيل الموديلات</string>
+    <string name="view_all_models">عرض الكل</string>
+    <string name="downloading_model">جارٍ تنزيل الموديل</string>
+    <string name="download_speed">السرعة</string>
+    <string name="logs_preview">سجلات السيرفر المباشرة</string>
+    <string name="no_logs">لا توجد سجلات حالية. قم بتشغيل السيرفر لرؤية التدفق.</string>
+    <string name="settings_title">إعدادات أولاما الاحترافية</string>
+</resources>
