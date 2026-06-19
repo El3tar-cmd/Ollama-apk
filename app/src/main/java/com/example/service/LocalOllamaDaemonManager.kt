@@ -78,31 +78,51 @@ class LocalOllamaDaemonManager private constructor() {
         _status.value = DaemonStatus.DOWNLOADING
         _downloadProgress.value = 0f
         
-        onLog("INFO", "بدء تثبيت حزمة أولاما المدمجة محلياً (Embedded Asset Binary)...")
+        onLog("INFO", "بدء عملية تحضير محرك Ollama المدمج...")
 
         val destFolder = getBinFolder(context)
         val binDir = File(destFolder, "bin")
-        if (!binDir.exists()) {
-            binDir.mkdirs()
-        }
+        if (!binDir.exists()) binDir.mkdirs()
         val binFile = File(binDir, "ollama")
 
-        if (binFile.exists()) {
-            binFile.delete()
+        val abi = when (Build.SUPPORTED_ABIS.firstOrNull()) {
+            "arm64-v8a" -> "arm64-v8a"
+            "armeabi-v7a" -> "armeabi-v7a"
+            else -> "arm64-v8a"
         }
 
+        // 1. Try Assets First
+        val assetPath = "$abi/ollama"
+        var assetExists = false
         try {
-            val abi = when (Build.SUPPORTED_ABIS.firstOrNull()) {
-                "arm64-v8a" -> "arm64-v8a"
-                "armeabi-v7a" -> "armeabi-v7a"
-                else -> "arm64-v8a"
-            }
+            context.assets.open(assetPath).close()
+            assetExists = true
+        } catch (e: Exception) {
+            onLog("WARNING", "تنبيه: ملف Ollama غير موجود في أصول التطبيق (Assets). سيتم محاولة التحميل من السيرفر...")
+        }
 
+        if (assetExists) {
+            onLog("INFO", "جاري استخراج Ollama من أصول التطبيق...")
+            return@withContext tryExtractFromAssets(context, assetPath, binFile, abi, destFolder, onLog)
+        } else {
+            // 2. Fallback to Download
+            onLog("INFO", "بدء تحميل المحرك من: $downloadUrl")
+            return@withContext tryDownloadAndInstall(context, downloadUrl, destFolder, binFile, onLog)
+        }
+    }
+
+    private suspend fun tryExtractFromAssets(
+        context: Context,
+        assetPath: String,
+        binFile: File,
+        abi: String,
+        destFolder: File,
+        onLog: suspend (String, String) -> Unit
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
             // Copy libc++_shared.so from assets if present
             val libDir = File(destFolder, "lib")
-            if (!libDir.exists()) {
-                libDir.mkdirs()
-            }
+            if (!libDir.exists()) libDir.mkdirs()
             val libFile = File(libDir, "libc++_shared.so")
             val libcxxAssetPath = "$abi/libc++_shared.so"
             try {
@@ -112,13 +132,10 @@ class LocalOllamaDaemonManager private constructor() {
                     }
                 }
                 libFile.setReadable(true, false)
-                onLog("INFO", "تم استخراج مكتبة الربط C++ الديناميكية (libc++_shared.so) بنجاح إلى: ${libFile.absolutePath}")
+                onLog("INFO", "تم استخراج مكتبة الربط C++ بنجاح.")
             } catch (e: Exception) {
-                onLog("WARNING", "تنبيه: لم يتم العثور على libc++_shared.so في الأصول أو فشل استخراجها: ${e.message}. سيتم الاعتماد على مكتبات النظام.")
+                onLog("WARNING", "تنبيه: libc++_shared.so مفقود، سيتم استخدام مكتبات النظام.")
             }
-
-            val assetPath = "$abi/ollama"
-            onLog("INFO", "جاري قراءة الملف الثنائي لأولاما من أصول التطبيق: assets/$assetPath ...")
 
             _status.value = DaemonStatus.EXTRACTING
             context.assets.open(assetPath).use { input ->
@@ -127,22 +144,56 @@ class LocalOllamaDaemonManager private constructor() {
                     val data = ByteArray(8192)
                     var total: Long = 0
                     var count: Int
-                    var lastUpdate = 0L
-
                     while (input.read(data).also { count = it } != -1) {
                         total += count
                         output.write(data, 0, count)
+                        if (totalLength > 0) _downloadProgress.value = total.toFloat() / totalLength.toFloat()
+                    }
+                }
+            }
+            binFile.setExecutable(true, false)
+            onLog("INFO", "تم تثبيت النسخة المدمجة بنجاح.")
+            _status.value = DaemonStatus.IDLE
+            true
+        } catch (e: Exception) {
+            onLog("ERROR", "فشل الاستخراج من الأصول: ${e.message}")
+            false
+        }
+    }
 
+    private suspend fun tryDownloadAndInstall(
+        context: Context,
+        url: String,
+        destFolder: File,
+        binFile: File,
+        onLog: suspend (String, String) -> Unit
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val downloadFile = File(context.cacheDir, "ollama-temp.tgz")
+            if (downloadFile.exists()) downloadFile.delete()
+
+            val connection = URL(url).openConnection() as HttpURLConnection
+            // إضافة User-Agent لتبدو العملية كطلب من متصفح حقيقي لتجنب الرفض 403
+            connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36")
+            connection.connect()
+            if (connection.responseCode != 200) throw Exception("HTTP ${connection.responseCode} while downloading")
+
+            val totalLength = connection.contentLength.toLong()
+            connection.inputStream.use { input ->
+                FileOutputStream(downloadFile).use { output ->
+                    val data = ByteArray(8192)
+                    var total: Long = 0
+                    var count: Int
+                    var lastUpdate = 0L
+                    while (input.read(data).also { count = it } != -1) {
+                        total += count
+                        output.write(data, 0, count)
                         if (totalLength > 0) {
                             val progress = total.toFloat() / totalLength.toFloat()
                             _downloadProgress.value = progress
-
                             val now = System.currentTimeMillis()
-                            if (now - lastUpdate > 300) {
-                                val percent = (progress * 100).toInt()
-                                val loadedMB = total / (1024 * 1024)
-                                val totalMB = totalLength / (1024 * 1024)
-                                onLog("DEBUG", "استخراج أولاما المدمج: $percent% ($loadedMB من $totalMB ميجابايت)...")
+                            if (now - lastUpdate > 500) {
+                                onLog("DEBUG", "تحميل المحرك: ${(progress * 100).toInt()}%...")
                                 lastUpdate = now
                             }
                         }
@@ -150,24 +201,32 @@ class LocalOllamaDaemonManager private constructor() {
                 }
             }
 
-            // Grant executable rights
-            if (binFile.exists()) {
-                binFile.setExecutable(true, false)
-                onLog("INFO", "تم فك وضغط ديمون أولاما المدمج بنجاح ومنحه صلاحيات التشغيل الكاملة: ${binFile.absolutePath}")
-                _status.value = DaemonStatus.IDLE
-                return@withContext true
-            } else {
-                throw Exception("ملف ollama الثنائي لم يتم العثور عليه في المسار بعد الاستخراج.")
+            onLog("INFO", "تم التحميل بنجاح. جاري فك الضغط (Targz)...")
+            _status.value = DaemonStatus.EXTRACTING
+            extractTarGzippedFile(downloadFile, destFolder, onLog)
+            
+            // Check if binary was extracted to standard location or root of extraction
+            // Ollama tgz usually has 'bin/ollama' or just 'ollama'
+            val possibleBin = File(destFolder, "ollama")
+            if (possibleBin.exists()) {
+                val finalBinDir = File(destFolder, "bin")
+                if (!finalBinDir.exists()) finalBinDir.mkdirs()
+                possibleBin.renameTo(binFile)
             }
 
-        } catch (e: Exception) {
-            _status.value = DaemonStatus.ERROR
-            _errorMessage.value = e.localizedMessage ?: "حدث خطأ غير معروف"
-            onLog("ERROR", "فشل تثبيت الملف الثنائي لأولاما من أصول التطبيق: ${e.localizedMessage}")
             if (binFile.exists()) {
-                binFile.delete()
+                binFile.setExecutable(true, false)
+                onLog("INFO", "تم تحميل وتثبيت المحرك بنجاح من المصدر الخارجي.")
+                downloadFile.delete()
+                _status.value = DaemonStatus.IDLE
+                true
+            } else {
+                throw Exception("فشل العثور على الملف الثنائي بعد فك الضغط.")
             }
-            return@withContext false
+        } catch (e: Exception) {
+            onLog("ERROR", "فشل التحميل أو التثبيت: ${e.message}")
+            _status.value = DaemonStatus.ERROR
+            false
         }
     }
 
